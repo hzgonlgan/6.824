@@ -85,7 +85,7 @@ func init() {
 }
 
 func (rf *Raft) randElectionTimeoutTicks() int {
-	return 30 + rand.Intn(20)
+	return 20 + rand.Intn(20)
 }
 
 // LogEntry 日志条目

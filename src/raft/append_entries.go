@@ -17,6 +17,8 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
+
+	ConflictIndex int
 }
 
 func (args *AppendEntriesArgs) String() string {
@@ -42,26 +44,29 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// Term 相同，实例肯定不是 Leader (一个 Term 只能有一个 Leader)
-	// 如果为 Candidate，肯定更旧，转为 Follower
-	if args.Term == rf.currentTerm {
-		if rf.role == Candidate {
-			// 发现现任 Leader
-			rf.beFollower(args.Term)
-			rf.votedFor = args.LeaderId
-			rf.persist()
-		}
-		rf.leftElectionTicks = rf.randElectionTimeoutTicks()
-		rf.synchronizeLog(args, reply)
-		return
+	// 如果为 Candidate，肯定更旧，发现现任 Leader，转为 Follower
+	if rf.role == Candidate {
+		rf.beFollower(args.Term)
+		rf.votedFor = args.LeaderId
+		rf.persist()
 	}
+	rf.leftElectionTicks = rf.randElectionTimeoutTicks()
+	rf.synchronizeLog(args, reply)
 }
 
 func (rf *Raft) synchronizeLog(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	if args.PrevLogIndex > rf.getLastLogIndex() || args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
 		if args.PrevLogIndex <= rf.getLastLogIndex() {
-			// 日志冲突
+			idx := args.PrevLogIndex
+			for rf.log[idx-1].Term == rf.log[args.PrevLogIndex].Term {
+				idx--
+			}
+			reply.ConflictIndex = idx
+			// 解决日志冲突
 			rf.log = rf.log[0:args.PrevLogIndex]
 			rf.persist()
+		} else {
+			reply.ConflictIndex = rf.getLastLogIndex() + 1
 		}
 		reply.Success = false
 	} else {
@@ -86,12 +91,15 @@ func (rf *Raft) broadcastAppendEntries() {
 			continue
 		}
 		prevLogIndex := rf.nextIndex[i] - 1
+		entries := rf.log[rf.nextIndex[i]:]
+		entriesCopy := make([]LogEntry, len(entries))
+		copy(entriesCopy, entries)
 		args := &AppendEntriesArgs{
 			Term:         rf.currentTerm,
 			LeaderId:     rf.me,
 			PrevLogIndex: prevLogIndex,
 			PrevLogTerm:  rf.log[prevLogIndex].Term,
-			Entries:      rf.log[rf.nextIndex[i]:],
+			Entries:      entriesCopy,
 			LeaderCommit: rf.commitIndex,
 		}
 		go func(id int) {
@@ -99,7 +107,7 @@ func (rf *Raft) broadcastAppendEntries() {
 			ch := make(chan bool, 1)
 			select {
 			case ch <- rf.sendAppendEntries(id, args, reply):
-				ok := <- ch
+				ok := <-ch
 				if ok {
 					rf.mu.Lock()
 					defer rf.mu.Unlock()
@@ -107,9 +115,10 @@ func (rf *Raft) broadcastAppendEntries() {
 					if reply.Term > rf.currentTerm {
 						rf.beFollower(reply.Term)
 						rf.persist()
+						return
 					}
 
-					if rf.role != Leader {
+					if rf.role != Leader || reply.Term < rf.currentTerm {
 						return
 					}
 
@@ -123,9 +132,7 @@ func (rf *Raft) broadcastAppendEntries() {
 							rf.commitIndex = quorumIndex
 						}
 					} else {
-						if args.PrevLogIndex > 0 {
-							rf.nextIndex[id]--
-						}
+						rf.nextIndex[id] = reply.ConflictIndex
 					}
 				}
 			case <-rf.quitCh:
@@ -141,4 +148,3 @@ func (rf *Raft) getQuorumIndex() int {
 	sort.Ints(matchIndex)
 	return matchIndex[(total-1)/2]
 }
-

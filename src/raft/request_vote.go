@@ -39,15 +39,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	// 实例为 Follower 才能进入 if，如果实例为 Leader 或者 Candidate 一定为自己投了票
-	if args.Term == rf.currentTerm {
-		if (rf.votedFor == None || rf.votedFor == args.CandidateId) &&
-			rf.isMoreUpToDate(args.LastLogIndex, args.LastLogTerm) {
-			rf.votedFor = args.CandidateId
-			rf.persist()
-			rf.leftElectionTicks = rf.randElectionTimeoutTicks()
-			reply.VoteGranted = true
-			DPrintf("%v grant vote to %d", rf.raftInfo(), args.CandidateId)
-		}
+	if (rf.votedFor == None || rf.votedFor == args.CandidateId) &&
+		rf.isMoreUpToDate(args.LastLogIndex, args.LastLogTerm) {
+		rf.votedFor = args.CandidateId
+		rf.persist()
+		rf.leftElectionTicks = rf.randElectionTimeoutTicks()
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = true
+		DPrintf("%v grant vote to %d", rf.raftInfo(), args.CandidateId)
 	}
 }
 
@@ -88,7 +87,7 @@ func (rf *Raft) broadcastRequestVote() {
 						return
 					}
 
-					if rf.role != Candidate {
+					if rf.role != Candidate || reply.Term < rf.currentTerm {
 						return
 					}
 
