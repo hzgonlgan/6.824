@@ -18,15 +18,14 @@ package raft
 //
 
 import (
+	"6_824/labgob"
+	"6_824/labrpc"
+	"bytes"
 	"fmt"
 	"math/rand"
+	"sync"
 	"sync/atomic"
 	"time"
-
-	//	"bytes"
-	"sync"
-	//	"6_824/labgob"
-	"6_824/labrpc"
 )
 
 // ApplyMsg
@@ -130,7 +129,7 @@ type Raft struct {
 
 func (rf *Raft) raftInfo() string {
 	return fmt.Sprintf("[%d %v term:%d voteFor: %d, logLen: %d, commitIndex: %d, lastApplied: %d]\n",
-		rf.me, rf.role.String(), rf.currentTerm, rf.votedFor, len(rf.log) - 1, rf.commitIndex, rf.lastApplied)
+		rf.me, rf.role.String(), rf.currentTerm, rf.votedFor, len(rf.log)-1, rf.commitIndex, rf.lastApplied)
 }
 
 // return currentTerm and whether this server
@@ -162,12 +161,13 @@ func (rf *Raft) getLastLogTerm() int {
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -179,17 +179,20 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 	// Your code here (2C).
 	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var log []LogEntry
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&log) != nil {
+		DPrintf("%v fail to read persist", rf.raftInfo())
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.log = log
+	}
 }
 
 //
@@ -240,8 +243,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			Term:    term,
 		}
 		rf.log = append(rf.log, entry)
-		rf.matchIndex[rf.me] = index
 		rf.persist()
+		rf.matchIndex[rf.me] = index
 		DPrintf("%v start agreement on entry index: %v", rf.raftInfo(), entry.Index)
 	}
 	return index, term, isLeader

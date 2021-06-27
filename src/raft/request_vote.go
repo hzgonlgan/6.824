@@ -28,6 +28,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
 
+	needPersist := false
+
 	if args.Term < rf.currentTerm {
 		return
 	}
@@ -35,18 +37,22 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// 发现新 Term
 	if args.Term > rf.currentTerm {
 		rf.beFollower(args.Term)
-		rf.persist()
+		needPersist = true
 	}
 
 	// 实例为 Follower 才能进入 if，如果实例为 Leader 或者 Candidate 一定为自己投了票
 	if (rf.votedFor == None || rf.votedFor == args.CandidateId) &&
 		rf.isMoreUpToDate(args.LastLogIndex, args.LastLogTerm) {
 		rf.votedFor = args.CandidateId
-		rf.persist()
+		needPersist = true
 		rf.leftElectionTicks = rf.randElectionTimeoutTicks()
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = true
 		DPrintf("%v grant vote to %d", rf.raftInfo(), args.CandidateId)
+	}
+
+	if needPersist {
+		rf.persist()
 	}
 }
 

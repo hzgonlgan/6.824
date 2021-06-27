@@ -35,13 +35,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = rf.currentTerm
 	reply.Success = false
 
+	needPersist := false
+
 	if args.Term < rf.currentTerm {
 		return
 	}
 
 	if args.Term > rf.currentTerm {
 		rf.beFollower(args.Term)
-		rf.persist()
+		needPersist = true
 	}
 
 	// Term 相同，实例肯定不是 Leader (一个 Term 只能有一个 Leader)
@@ -49,10 +51,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if rf.role == Candidate {
 		rf.beFollower(args.Term)
 		rf.votedFor = args.LeaderId
-		rf.persist()
+		needPersist = true
 	}
 	rf.leftElectionTicks = rf.randElectionTimeoutTicks()
 	rf.synchronizeLog(args, reply)
+
+	if needPersist {
+		rf.persist()
+	}
 }
 
 func (rf *Raft) synchronizeLog(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -75,10 +81,10 @@ func (rf *Raft) synchronizeLog(args *AppendEntriesArgs, reply *AppendEntriesRepl
 		reply.Success = false
 	} else {
 		rf.log = append(rf.log[0:args.PrevLogIndex+1], args.Entries...)
+		rf.persist()
 		if args.LeaderCommit > rf.commitIndex {
 			rf.commitIndex = minInt(args.LeaderCommit, rf.getLastLogIndex())
 		}
-		rf.persist()
 		reply.Success = true
 	}
 	reply.Term = rf.currentTerm
