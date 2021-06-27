@@ -18,6 +18,7 @@ type AppendEntriesReply struct {
 	Term    int
 	Success bool
 
+	ConflictTerm int
 	ConflictIndex int
 }
 
@@ -62,11 +63,14 @@ func (rf *Raft) synchronizeLog(args *AppendEntriesArgs, reply *AppendEntriesRepl
 				idx--
 			}
 			reply.ConflictIndex = idx
+			reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
+
 			// 解决日志冲突
 			rf.log = rf.log[0:args.PrevLogIndex]
 			rf.persist()
 		} else {
 			reply.ConflictIndex = rf.getLastLogIndex() + 1
+			reply.ConflictTerm = -1
 		}
 		reply.Success = false
 	} else {
@@ -133,6 +137,15 @@ func (rf *Raft) broadcastAppendEntries() {
 						}
 					} else {
 						rf.nextIndex[id] = reply.ConflictIndex
+						if reply.ConflictTerm != -1 && reply.ConflictTerm < args.PrevLogTerm {
+							idx := args.PrevLogIndex
+							for rf.log[idx].Term > reply.ConflictTerm {
+								idx--
+							}
+							if rf.log[idx].Term == reply.ConflictTerm {
+								rf.nextIndex[id] = idx + 1
+							}
+						}
 					}
 				}
 			case <-rf.quitCh:
