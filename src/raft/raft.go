@@ -76,7 +76,7 @@ func (r *Role) String() string {
 const (
 	None                  = -1
 	tickIntervalMs        = 10
-	heartbeatTimeoutTicks = 10
+	heartbeatTimeoutTicks = 8
 )
 
 func init() {
@@ -84,7 +84,7 @@ func init() {
 }
 
 func (rf *Raft) randElectionTimeoutTicks() int {
-	return 20 + rand.Intn(20)
+	return 35 + rand.Intn(15)
 }
 
 // LogEntry 日志条目
