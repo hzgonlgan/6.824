@@ -18,19 +18,24 @@ type AppendEntriesReply struct {
 	Term    int
 	Success bool
 
-	ConflictTerm int
+	ConflictTerm  int
 	ConflictIndex int
 }
 
 func (args *AppendEntriesArgs) String() string {
-	return fmt.Sprintf("Term: %d, LeaderId: %d, PrevLogIndex: %d, PrevLogTerm: %d, LeaderCommit: %d, EntryLen: %d",
+	return fmt.Sprintf("[Term: %d, LeaderId: %d, PrevLogIndex: %d, PrevLogTerm: %d, LeaderCommit: %d, EntryLen: %d]",
 		args.Term, args.LeaderId, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, len(args.Entries))
+}
+
+func (reply *AppendEntriesReply) String() string {
+	return fmt.Sprintf("[Term: %d, Success: %v, ConflictTerm: %d, ConflictIndex: %d]",
+		reply.Term, reply.Success, reply.ConflictTerm, reply.ConflictIndex)
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("%v receive append entries %#v", rf.raftInfo(), args.String())
+	DPrintf("%v receive append entries %v", rf.raftInfo(), args.String())
 
 	reply.Term = rf.currentTerm
 	reply.Success = false
@@ -59,6 +64,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if needPersist {
 		rf.persist()
 	}
+
+	DPrintf("%v reply append entries %v", rf.raftInfo(), reply.String())
 }
 
 func (rf *Raft) synchronizeLog(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -80,7 +87,14 @@ func (rf *Raft) synchronizeLog(args *AppendEntriesArgs, reply *AppendEntriesRepl
 		}
 		reply.Success = false
 	} else {
-		rf.log = append(rf.log[0:args.PrevLogIndex+1], args.Entries...)
+		// 如果 rpc 乱序，旧的 rpc 请求可能使之前提交的日志被截断，这是错误的
+		if args.PrevLogIndex+len(args.Entries) > rf.getLastLogIndex() {
+			rf.log = append(rf.log[0:args.PrevLogIndex+1], args.Entries...)
+		} else {
+			for i := 0; i < len(args.Entries); i++ {
+				rf.log[args.PrevLogIndex+1+i] = args.Entries[i]
+			}
+		}
 		rf.persist()
 		if args.LeaderCommit > rf.commitIndex {
 			rf.commitIndex = minInt(args.LeaderCommit, rf.getLastLogIndex())
@@ -112,6 +126,7 @@ func (rf *Raft) broadcastAppendEntries() {
 			Entries:      entriesCopy,
 			LeaderCommit: rf.commitIndex,
 		}
+		DPrintf("%v send append entries to %d", rf.raftInfo(), i)
 		go func(id int) {
 			reply := &AppendEntriesReply{}
 			ch := make(chan bool, 1)
@@ -121,6 +136,7 @@ func (rf *Raft) broadcastAppendEntries() {
 				if ok {
 					rf.mu.Lock()
 					defer rf.mu.Unlock()
+					DPrintf("%v receive append entries reply from %d", rf.raftInfo(), id)
 
 					if reply.Term > rf.currentTerm {
 						rf.beFollower(reply.Term)

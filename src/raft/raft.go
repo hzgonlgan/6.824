@@ -113,9 +113,11 @@ type Raft struct {
 	quitCh  chan struct{}
 	applyCh chan ApplyMsg
 	// 在所有服务器上的稳定状态
-	currentTerm int
-	votedFor    int
-	log         []LogEntry
+	currentTerm       int
+	votedFor          int
+	log               []LogEntry
+	lastIncludedIndex int
+	lastIncludedTerm  int
 	// 在所有服务器上的非稳定状态
 	commitIndex int
 	lastApplied int
@@ -128,8 +130,8 @@ type Raft struct {
 }
 
 func (rf *Raft) raftInfo() string {
-	return fmt.Sprintf("[%d %v term:%d voteFor: %d, logLen: %d, commitIndex: %d, lastApplied: %d]\n",
-		rf.me, rf.role.String(), rf.currentTerm, rf.votedFor, len(rf.log)-1, rf.commitIndex, rf.lastApplied)
+	return fmt.Sprintf("[%d %v term:%d voteFor: %d, logLen: %d, lastIndex: %d, lastTerm: %d, commitIndex: %d, lastApplied: %d]\n",
+		rf.me, rf.role.String(), rf.currentTerm, rf.votedFor, len(rf.log)-1, rf.getLastLogIndex(), rf.getLastLogTerm(), rf.commitIndex, rf.lastApplied)
 }
 
 // return currentTerm and whether this server
@@ -146,11 +148,11 @@ func (rf *Raft) GetState() (int, bool) {
 }
 
 func (rf *Raft) getLastLogIndex() int {
-	return len(rf.log) - 1
+	return rf.log[len(rf.log)-1].Index
 }
 
 func (rf *Raft) getLastLogTerm() int {
-	return rf.log[rf.getLastLogIndex()].Term
+	return rf.log[len(rf.log)-1].Term
 }
 
 //
@@ -166,6 +168,8 @@ func (rf *Raft) persist() {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
+	e.Encode(rf.lastIncludedIndex)
+	e.Encode(rf.lastIncludedTerm)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -184,35 +188,21 @@ func (rf *Raft) readPersist(data []byte) {
 	var currentTerm int
 	var votedFor int
 	var log []LogEntry
+	var lastIncludedIndex int
+	var lastIncludedTerm int
 	if d.Decode(&currentTerm) != nil ||
 		d.Decode(&votedFor) != nil ||
-		d.Decode(&log) != nil {
+		d.Decode(&log) != nil ||
+		d.Decode(&lastIncludedIndex) != nil ||
+		d.Decode(&lastIncludedTerm) != nil {
 		DPrintf("%v fail to read persist", rf.raftInfo())
 	} else {
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
 		rf.log = log
+		rf.lastIncludedIndex = lastIncludedIndex
+		rf.lastIncludedTerm = lastIncludedTerm
 	}
-}
-
-//
-// A service wants to switch to snapshot.  Only do so if Raft hasn't
-// have more recent info since it communicate the snapshot on applyCh.
-//
-func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
-
-	// Your code here (2D).
-
-	return true
-}
-
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
-
 }
 
 //
@@ -243,8 +233,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			Term:    term,
 		}
 		rf.log = append(rf.log, entry)
-		rf.persist()
 		rf.matchIndex[rf.me] = index
+		rf.persist()
+		// 如果在这里发送 AppendEntries，可能会用新 Term 发送，造成错误
+		//rf.leftHeartbeatTicks = 0
 		DPrintf("%v start agreement on entry index: %v", rf.raftInfo(), entry.Index)
 	}
 	return index, term, isLeader
@@ -298,6 +290,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0
 	rf.votedFor = None
 	rf.log = append(rf.log, LogEntry{Index: 0, Term: 0})
+	rf.lastIncludedIndex = 0
+	rf.lastIncludedTerm = 0
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.nextIndex = make([]int, len(rf.peers))

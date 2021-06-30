@@ -1,5 +1,7 @@
 package raft
 
+import "fmt"
+
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 	Term         int
@@ -14,6 +16,16 @@ type RequestVoteReply struct {
 	VoteGranted bool
 }
 
+func (args *RequestVoteArgs) String() string {
+	return fmt.Sprintf("[Term: %d, CandidateId: %d, LastLogIndex: %d, LastLogTerm: %d]",
+		args.Term, args.CandidateId, args.LastLogIndex, args.LastLogTerm)
+}
+
+func (reply *RequestVoteReply) String() string {
+	return fmt.Sprintf("[Term: %d, VoteGranted: %v]",
+		reply.Term, reply.VoteGranted)
+}
+
 func (rf *Raft) isMoreUpToDate(destIndex int, destTerm int) bool {
 	srcIndex := rf.getLastLogIndex()
 	srcTerm := rf.getLastLogTerm()
@@ -23,7 +35,7 @@ func (rf *Raft) isMoreUpToDate(destIndex int, destTerm int) bool {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("%v receive vote request %#v", rf.raftInfo(), args)
+	DPrintf("%v receive request vote %v", rf.raftInfo(), args.String())
 
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
@@ -48,12 +60,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.leftElectionTicks = rf.randElectionTimeoutTicks()
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = true
-		DPrintf("%v grant vote to %d", rf.raftInfo(), args.CandidateId)
 	}
 
 	if needPersist {
 		rf.persist()
 	}
+
+	DPrintf("%v reply request vote %v", rf.raftInfo(), reply.String())
 }
 
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
@@ -75,17 +88,17 @@ func (rf *Raft) broadcastRequestVote() {
 		if i == rf.me {
 			continue
 		}
-		DPrintf("%v send RequestVote to %d", rf.raftInfo(), i)
-
+		DPrintf("%v send request vote to %d", rf.raftInfo(), i)
 		go func(id int) {
 			reply := &RequestVoteReply{}
 			ch := make(chan bool, 1)
 			select {
 			case ch <- rf.sendRequestVote(id, args, reply):
-				ok := <- ch
+				ok := <-ch
 				if ok {
 					rf.mu.Lock()
 					defer rf.mu.Unlock()
+					DPrintf("%v receive request vote reply from %d", rf.raftInfo(), id)
 
 					if reply.Term > rf.currentTerm {
 						rf.beFollower(reply.Term)
@@ -110,4 +123,3 @@ func (rf *Raft) broadcastRequestVote() {
 		}(i)
 	}
 }
-
