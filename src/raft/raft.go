@@ -148,11 +148,25 @@ func (rf *Raft) GetState() (int, bool) {
 }
 
 func (rf *Raft) getLastLogIndex() int {
-	return rf.log[len(rf.log)-1].Index
+	arrLength := len(rf.log)-1
+	if arrLength > 0 {
+		return rf.log[arrLength].Index
+	} else {
+		return rf.lastIncludedIndex
+	}
 }
 
 func (rf *Raft) getLastLogTerm() int {
-	return rf.log[len(rf.log)-1].Term
+	arrLength := len(rf.log)-1
+	if arrLength > 0 {
+		return rf.log[arrLength].Term
+	} else {
+		return rf.lastIncludedTerm
+	}
+}
+
+func (rf *Raft) getRealIndex(logIndex int) int {
+	return logIndex - rf.lastIncludedIndex
 }
 
 //
@@ -163,6 +177,10 @@ func (rf *Raft) getLastLogTerm() int {
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
+	rf.persister.SaveRaftState(rf.getPersistState())
+}
+
+func (rf *Raft) getPersistState() []byte {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
@@ -170,8 +188,7 @@ func (rf *Raft) persist() {
 	e.Encode(rf.log)
 	e.Encode(rf.lastIncludedIndex)
 	e.Encode(rf.lastIncludedTerm)
-	data := w.Bytes()
-	rf.persister.SaveRaftState(data)
+	return w.Bytes()
 }
 
 //

@@ -29,7 +29,7 @@ func (rf *Raft) applyLoop() {
 		time.Sleep(time.Millisecond * 20)
 		rf.mu.Lock()
 		for rf.lastApplied < rf.commitIndex {
-			entry := rf.log[rf.lastApplied+1]
+			entry := rf.log[rf.getRealIndex(rf.lastApplied+1)]
 			applyMsg := ApplyMsg{
 				CommandValid: true,
 				Command:      entry.Command,
@@ -55,7 +55,7 @@ func (rf *Raft) timeHandler() {
 		rf.leftHeartbeatTicks--
 		if rf.leftHeartbeatTicks <= 0 {
 			rf.leftHeartbeatTicks = heartbeatTimeoutTicks
-			rf.broadcastAppendEntries()
+			rf.broadcastHeartbeat()
 		}
 	} else if rf.role == Follower || rf.role == Candidate {
 		rf.leftElectionTicks--
@@ -93,7 +93,7 @@ func (rf *Raft) beLeader() {
 		rf.nextIndex[i] = rf.getLastLogIndex() + 1
 	}
 	rf.leftHeartbeatTicks = heartbeatTimeoutTicks
-	rf.broadcastAppendEntries()
+	rf.broadcastHeartbeat()
 	DPrintf("%v change to leader", rf.raftInfo())
 }
 

@@ -109,71 +109,80 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
-func (rf *Raft) broadcastAppendEntries() {
+func (rf *Raft) broadcastHeartbeat() {
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
 		}
-		prevLogIndex := rf.nextIndex[i] - 1
-		entries := rf.log[rf.nextIndex[i]:]
-		entriesCopy := make([]LogEntry, len(entries))
-		copy(entriesCopy, entries)
-		args := &AppendEntriesArgs{
-			Term:         rf.currentTerm,
-			LeaderId:     rf.me,
-			PrevLogIndex: prevLogIndex,
-			PrevLogTerm:  rf.log[prevLogIndex].Term,
-			Entries:      entriesCopy,
-			LeaderCommit: rf.commitIndex,
+		if rf.nextIndex[i] <= rf.lastIncludedIndex {
+			rf.syncInstallSnapshot(i)
+		} else {
+			rf.syncAppendEntries(i)
 		}
-		DPrintf("%v send append entries to %d", rf.raftInfo(), i)
-		go func(id int) {
-			reply := &AppendEntriesReply{}
-			ch := make(chan bool, 1)
-			select {
-			case ch <- rf.sendAppendEntries(id, args, reply):
-				ok := <-ch
-				if ok {
-					rf.mu.Lock()
-					defer rf.mu.Unlock()
-					DPrintf("%v receive append entries reply from %d", rf.raftInfo(), id)
 
-					if reply.Term > rf.currentTerm {
-						rf.beFollower(reply.Term)
-						rf.persist()
-						return
+	}
+}
+
+func (rf *Raft) syncAppendEntries(i int) {
+	DPrintf("%v send append entries to %d", rf.raftInfo(), i)
+	prevLogIndex := rf.nextIndex[i] - 1
+	entries := rf.log[rf.nextIndex[i]:]
+	entriesCopy := make([]LogEntry, len(entries))
+	copy(entriesCopy, entries)
+	args := &AppendEntriesArgs{
+		Term:         rf.currentTerm,
+		LeaderId:     rf.me,
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  rf.log[prevLogIndex].Term,
+		Entries:      entriesCopy,
+		LeaderCommit: rf.commitIndex,
+	}
+	go func(id int) {
+		reply := &AppendEntriesReply{}
+		ch := make(chan bool, 1)
+		select {
+		case ch <- rf.sendAppendEntries(id, args, reply):
+			ok := <-ch
+			if ok {
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
+				DPrintf("%v receive append entries reply from %d", rf.raftInfo(), id)
+
+				if reply.Term > rf.currentTerm {
+					rf.beFollower(reply.Term)
+					rf.persist()
+					return
+				}
+
+				if rf.role != Leader || reply.Term < rf.currentTerm {
+					return
+				}
+
+				if reply.Success {
+					rf.matchIndex[id] = args.PrevLogIndex + len(args.Entries)
+					rf.nextIndex[id] = rf.matchIndex[id] + 1
+
+					quorumIndex := rf.getQuorumIndex()
+					// 领导人只能提交当前任期的日志
+					if rf.log[quorumIndex].Term == rf.currentTerm && quorumIndex > rf.commitIndex {
+						rf.commitIndex = quorumIndex
 					}
-
-					if rf.role != Leader || reply.Term < rf.currentTerm {
-						return
-					}
-
-					if reply.Success {
-						rf.matchIndex[id] = args.PrevLogIndex + len(args.Entries)
-						rf.nextIndex[id] = rf.matchIndex[id] + 1
-
-						quorumIndex := rf.getQuorumIndex()
-						// 领导人只能提交当前任期的日志
-						if rf.log[quorumIndex].Term == rf.currentTerm && quorumIndex > rf.commitIndex {
-							rf.commitIndex = quorumIndex
+				} else {
+					rf.nextIndex[id] = reply.ConflictIndex
+					if reply.ConflictTerm != -1 && reply.ConflictTerm < args.PrevLogTerm {
+						idx := args.PrevLogIndex
+						for rf.log[idx].Term > reply.ConflictTerm {
+							idx--
 						}
-					} else {
-						rf.nextIndex[id] = reply.ConflictIndex
-						if reply.ConflictTerm != -1 && reply.ConflictTerm < args.PrevLogTerm {
-							idx := args.PrevLogIndex
-							for rf.log[idx].Term > reply.ConflictTerm {
-								idx--
-							}
-							if rf.log[idx].Term == reply.ConflictTerm {
-								rf.nextIndex[id] = idx + 1
-							}
+						if rf.log[idx].Term == reply.ConflictTerm {
+							rf.nextIndex[id] = idx + 1
 						}
 					}
 				}
-			case <-rf.quitCh:
 			}
-		}(i)
-	}
+		case <-rf.quitCh:
+		}
+	}(i)
 }
 
 func (rf *Raft) getQuorumIndex() int {
