@@ -26,11 +26,14 @@ func (reply *InstallSnapshotReply) String() string {
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("%v receive install snapshot %v", rf.raftInfo(), args.String())
-
-	reply.Term = rf.currentTerm
-
 	needPersist := false
+	defer func() {
+		reply.Term = rf.currentTerm
+		if needPersist {
+			rf.persist()
+		}
+	}()
+	DPrintf("%v receive install snapshot %v", rf.raftInfo(), args.String())
 
 	if args.Term < rf.currentTerm {
 		return
@@ -47,16 +50,11 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		needPersist = true
 	}
 
-	rf.leftElectionTicks = rf.randElectionTimeoutTicks()
-	reply.Term = rf.currentTerm
-
-	if needPersist {
-		rf.persist()
-	}
-
 	if args.LastIncludedIndex <= rf.lastIncludedIndex {
 		return
 	}
+
+	rf.leftElectionTicks = rf.randElectionTimeoutTicks()
 
 	go func() {
 		rf.applyCh <- ApplyMsg{
@@ -66,6 +64,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 			SnapshotIndex: args.LastIncludedIndex,
 		}
 	}()
+
+	DPrintf("%v reply install snapshot %v", rf.raftInfo(), reply.String())
 }
 
 func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
@@ -102,6 +102,7 @@ func (rf *Raft) syncInstallSnapshot(i int) {
 				if rf.role != Leader || reply.Term < rf.currentTerm {
 					return
 				}
+
 				rf.matchIndex[i] = rf.lastIncludedIndex
 				rf.nextIndex[i] = rf.lastIncludedIndex + 1
 			}
@@ -119,7 +120,7 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if lastIncludedIndex <= rf.lastApplied {
+	if lastIncludedIndex <= rf.commitIndex  {
 		return false
 	}
 
@@ -128,7 +129,7 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 	} else {
 		rf.log = rf.log[rf.getRealIndex(lastIncludedIndex):]
 	}
-	rf.log[0] = LogEntry{Index: 0, Term: 0}
+	rf.log[0] = LogEntry{Index: lastIncludedIndex, Term: lastIncludedTerm}
 	rf.lastIncludedIndex = lastIncludedIndex
 	rf.lastIncludedTerm = lastIncludedTerm
 	rf.persister.SaveStateAndSnapshot(rf.getPersistState(), snapshot)
@@ -145,15 +146,16 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	DPrintf("%v creat snapshot before index: %d", rf.raftInfo(), index)
 
-	if index <= rf.lastIncludedIndex || index > rf.lastApplied {
+	if index <= rf.lastIncludedIndex {
 		return
 	}
 
 	realIndex := rf.getRealIndex(index)
-	rf.log = rf.log[realIndex:]
-	rf.log[0] = LogEntry{Index: 0, Term: 0}
-	rf.lastIncludedIndex = rf.log[realIndex].Index
+	rf.lastIncludedIndex = index
 	rf.lastIncludedTerm = rf.log[realIndex].Term
+	rf.log = rf.log[realIndex:]
+	rf.log[0] = LogEntry{Index: rf.lastIncludedIndex, Term: rf.lastIncludedTerm}
 	rf.persister.SaveStateAndSnapshot(rf.getPersistState(), snapshot)
 }

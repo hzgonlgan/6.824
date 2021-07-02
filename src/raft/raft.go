@@ -112,6 +112,7 @@ type Raft struct {
 	timeCh  chan struct{}
 	quitCh  chan struct{}
 	applyCh chan ApplyMsg
+	applyCond *sync.Cond
 	// 在所有服务器上的稳定状态
 	currentTerm       int
 	votedFor          int
@@ -148,21 +149,11 @@ func (rf *Raft) GetState() (int, bool) {
 }
 
 func (rf *Raft) getLastLogIndex() int {
-	arrLength := len(rf.log)-1
-	if arrLength > 0 {
-		return rf.log[arrLength].Index
-	} else {
-		return rf.lastIncludedIndex
-	}
+	return rf.log[len(rf.log)-1].Index
 }
 
 func (rf *Raft) getLastLogTerm() int {
-	arrLength := len(rf.log)-1
-	if arrLength > 0 {
-		return rf.log[arrLength].Term
-	} else {
-		return rf.lastIncludedTerm
-	}
+	return rf.log[len(rf.log)-1].Term
 }
 
 func (rf *Raft) getRealIndex(logIndex int) int {
@@ -304,18 +295,19 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.timeCh = make(chan struct{}, 10)
 	rf.quitCh = make(chan struct{})
 	rf.applyCh = applyCh
+	rf.applyCond = sync.NewCond(&rf.mu)
 	rf.currentTerm = 0
 	rf.votedFor = None
 	rf.log = append(rf.log, LogEntry{Index: 0, Term: 0})
 	rf.lastIncludedIndex = 0
 	rf.lastIncludedTerm = 0
 	rf.commitIndex = 0
-	rf.lastApplied = 0
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
 	rf.leftElectionTicks = rf.randElectionTimeoutTicks()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.lastApplied = rf.lastIncludedIndex
 
 	go rf.tickLoop()
 	go rf.applyLoop()

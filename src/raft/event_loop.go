@@ -25,25 +25,29 @@ func (rf *Raft) tickLoop() {
 }
 
 func (rf *Raft) applyLoop() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 	for !rf.killed() {
-		time.Sleep(time.Millisecond * 20)
-		rf.mu.Lock()
-		for rf.lastApplied < rf.commitIndex {
+		if rf.lastApplied < rf.commitIndex {
 			entry := rf.log[rf.getRealIndex(rf.lastApplied+1)]
 			applyMsg := ApplyMsg{
 				CommandValid: true,
 				Command:      entry.Command,
 				CommandIndex: entry.Index,
 			}
+			rf.mu.Unlock()
 			select {
 			case rf.applyCh <- applyMsg:
 			case <-rf.quitCh:
 				return
 			}
+			rf.mu.Lock()
 			rf.lastApplied++
 			DPrintf("%v applied entry index: %v", rf.raftInfo(), entry.Index)
+		} else {
+			rf.applyCond.Wait()
 		}
-		rf.mu.Unlock()
 	}
 }
 
@@ -89,7 +93,11 @@ func (rf *Raft) beFollower(term int) {
 func (rf *Raft) beLeader() {
 	rf.role = Leader
 	for i := 0; i < len(rf.peers); i++ {
-		rf.matchIndex[i] = 0
+		if i == rf.me {
+			rf.matchIndex[i] = rf.getLastLogIndex()
+		} else {
+			rf.matchIndex[i] = 0
+		}
 		rf.nextIndex[i] = rf.getLastLogIndex() + 1
 	}
 	rf.leftHeartbeatTicks = heartbeatTimeoutTicks

@@ -35,12 +35,17 @@ func (reply *AppendEntriesReply) String() string {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	needPersist := false
+	defer func() {
+		reply.Term = rf.currentTerm
+		if needPersist {
+			rf.persist()
+		}
+	}()
 	DPrintf("%v receive append entries %v", rf.raftInfo(), args.String())
 
 	reply.Term = rf.currentTerm
-	reply.Success = false
 
-	needPersist := false
 
 	if args.Term < rf.currentTerm {
 		return
@@ -61,47 +66,59 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.leftElectionTicks = rf.randElectionTimeoutTicks()
 	rf.synchronizeLog(args, reply)
 
-	if needPersist {
-		rf.persist()
-	}
-
 	DPrintf("%v reply append entries %v", rf.raftInfo(), reply.String())
 }
 
 func (rf *Raft) synchronizeLog(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	if args.PrevLogIndex > rf.getLastLogIndex() || args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
-		if args.PrevLogIndex <= rf.getLastLogIndex() {
-			idx := args.PrevLogIndex
-			for rf.log[idx-1].Term == rf.log[args.PrevLogIndex].Term {
-				idx--
-			}
-			reply.ConflictIndex = idx
-			reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
-
-			// 解决日志冲突
-			rf.log = rf.log[0:args.PrevLogIndex]
-			rf.persist()
-		} else {
-			reply.ConflictIndex = rf.getLastLogIndex() + 1
-			reply.ConflictTerm = -1
-		}
-		reply.Success = false
-	} else {
-		// 如果 rpc 乱序，旧的 rpc 请求可能使之前提交的日志被截断，这是错误的
-		if args.PrevLogIndex+len(args.Entries) > rf.getLastLogIndex() {
-			rf.log = append(rf.log[0:args.PrevLogIndex+1], args.Entries...)
-		} else {
-			for i := 0; i < len(args.Entries); i++ {
-				rf.log[args.PrevLogIndex+1+i] = args.Entries[i]
-			}
-		}
-		rf.persist()
-		if args.LeaderCommit > rf.commitIndex {
-			rf.commitIndex = minInt(args.LeaderCommit, rf.getLastLogIndex())
-		}
-		reply.Success = true
-	}
 	reply.Term = rf.currentTerm
+
+	if args.PrevLogIndex < rf.lastIncludedIndex {
+		reply.ConflictIndex = rf.lastIncludedIndex+1
+		reply.ConflictTerm = -1
+		reply.Success = false
+		return
+	}
+
+	if args.PrevLogIndex > rf.getLastLogIndex() {
+		reply.ConflictIndex = rf.getLastLogIndex() + 1
+		reply.ConflictTerm = -1
+		reply.Success = false
+		return
+	}
+	// lastIncludeIndex <= prevLogIndex <= lastLogIndex
+	// 0 <= getRealIndex(prevLogIndex) <= len(log) - 1
+	if args.PrevLogTerm != rf.log[rf.getRealIndex(args.PrevLogIndex)].Term {
+		idx := args.PrevLogIndex
+		for rf.getRealIndex(idx-1) > 0 &&
+			rf.log[rf.getRealIndex(idx-1)].Term ==
+			rf.log[rf.getRealIndex(args.PrevLogIndex)].Term {
+			idx--
+		}
+		reply.ConflictIndex = idx
+		reply.ConflictTerm = rf.log[rf.getRealIndex(args.PrevLogIndex)].Term
+		reply.Success = false
+		// 解决日志冲突
+		rf.log = rf.log[0:rf.getRealIndex(args.PrevLogIndex)]
+		rf.persist()
+		return
+	}
+
+	// 如果 rpc 乱序，旧的 rpc 请求可能使之前提交的日志被截断，这是错误的
+	if args.PrevLogIndex+len(args.Entries) > rf.getLastLogIndex() {
+		rf.log = append(rf.log[0:rf.getRealIndex(args.PrevLogIndex+1)], args.Entries...)
+	} else {
+		for i := 0; i < len(args.Entries); i++ {
+			rf.log[rf.getRealIndex(args.PrevLogIndex+1+i)] = args.Entries[i]
+		}
+	}
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = minInt(args.LeaderCommit, rf.getLastLogIndex())
+		if rf.commitIndex > rf.lastApplied {
+			rf.applyCond.Signal()
+		}
+	}
+	reply.Success = true
+	rf.persist()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -126,14 +143,14 @@ func (rf *Raft) broadcastHeartbeat() {
 func (rf *Raft) syncAppendEntries(i int) {
 	DPrintf("%v send append entries to %d", rf.raftInfo(), i)
 	prevLogIndex := rf.nextIndex[i] - 1
-	entries := rf.log[rf.nextIndex[i]:]
+	entries := rf.log[rf.getRealIndex(rf.nextIndex[i]):]
 	entriesCopy := make([]LogEntry, len(entries))
 	copy(entriesCopy, entries)
 	args := &AppendEntriesArgs{
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
 		PrevLogIndex: prevLogIndex,
-		PrevLogTerm:  rf.log[prevLogIndex].Term,
+		PrevLogTerm:  rf.log[rf.getRealIndex(prevLogIndex)].Term,
 		Entries:      entriesCopy,
 		LeaderCommit: rf.commitIndex,
 	}
@@ -164,17 +181,20 @@ func (rf *Raft) syncAppendEntries(i int) {
 
 					quorumIndex := rf.getQuorumIndex()
 					// 领导人只能提交当前任期的日志
-					if rf.log[quorumIndex].Term == rf.currentTerm && quorumIndex > rf.commitIndex {
+					if quorumIndex > rf.commitIndex && rf.log[rf.getRealIndex(quorumIndex)].Term == rf.currentTerm {
 						rf.commitIndex = quorumIndex
+						if rf.commitIndex > rf.lastApplied {
+							rf.applyCond.Signal()
+						}
 					}
 				} else {
 					rf.nextIndex[id] = reply.ConflictIndex
 					if reply.ConflictTerm != -1 && reply.ConflictTerm < args.PrevLogTerm {
 						idx := args.PrevLogIndex
-						for rf.log[idx].Term > reply.ConflictTerm {
+						for rf.getRealIndex(idx) > 0 && rf.log[rf.getRealIndex(idx)].Term > reply.ConflictTerm {
 							idx--
 						}
-						if rf.log[idx].Term == reply.ConflictTerm {
+						if rf.getRealIndex(idx) > 0 {
 							rf.nextIndex[id] = idx + 1
 						}
 					}

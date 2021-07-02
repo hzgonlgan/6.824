@@ -35,12 +35,15 @@ func (rf *Raft) isMoreUpToDate(destIndex int, destTerm int) bool {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("%v receive request vote %v", rf.raftInfo(), args.String())
-
-	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
-
 	needPersist := false
+	defer func() {
+		reply.Term = rf.currentTerm
+		if needPersist {
+			rf.persist()
+		}
+	}()
+	DPrintf("%v receive request vote %v", rf.raftInfo(), args.String())
 
 	if args.Term < rf.currentTerm {
 		return
@@ -60,10 +63,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.leftElectionTicks = rf.randElectionTimeoutTicks()
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = true
-	}
-
-	if needPersist {
-		rf.persist()
 	}
 
 	DPrintf("%v reply request vote %v", rf.raftInfo(), reply.String())
