@@ -100,13 +100,14 @@ func (rf *Raft) synchronizeLog(args *AppendEntriesArgs, reply *AppendEntriesRepl
 	}
 
 	// 如果 rpc 乱序，旧的 rpc 请求可能使之前提交的日志被截断，这是错误的
-	if args.PrevLogIndex+len(args.Entries) > rf.getLastLogIndex() {
-		rf.log = append(rf.log[0:rf.getRealIndex(args.PrevLogIndex+1)], args.Entries...)
-	} else {
-		for i := 0; i < len(args.Entries); i++ {
-			rf.log[rf.getRealIndex(args.PrevLogIndex+1+i)] = args.Entries[i]
+	for idx, entry := range args.Entries {
+		if entry.Index > rf.getLastLogIndex() ||
+			entry.Term != rf.log[rf.getRealIndex(entry.Index)].Term {
+			rf.log  = append(rf.log[0:rf.getRealIndex(entry.Index)], args.Entries[idx:]...)
+			break
 		}
 	}
+
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = minInt(args.LeaderCommit, rf.getLastLogIndex())
 		if rf.commitIndex > rf.lastApplied {
