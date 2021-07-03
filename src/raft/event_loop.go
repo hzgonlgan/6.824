@@ -26,8 +26,6 @@ func (rf *Raft) tickLoop() {
 
 func (rf *Raft) applyLoop() {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
 	for !rf.killed() {
 		if rf.lastApplied < rf.commitIndex {
 			entry := rf.log[rf.getRealIndex(rf.lastApplied+1)]
@@ -49,6 +47,7 @@ func (rf *Raft) applyLoop() {
 			rf.applyCond.Wait()
 		}
 	}
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) timeHandler() {

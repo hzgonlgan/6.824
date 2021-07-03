@@ -44,9 +44,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}()
 	DPrintf("%v receive append entries %v", rf.raftInfo(), args.String())
 
-	reply.Term = rf.currentTerm
-
-
 	if args.Term < rf.currentTerm {
 		return
 	}
@@ -63,15 +60,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.votedFor = args.LeaderId
 		needPersist = true
 	}
+
 	rf.leftElectionTicks = rf.randElectionTimeoutTicks()
-	rf.synchronizeLog(args, reply)
+	rf.synchronizeLog(args, reply, &needPersist)
 
 	DPrintf("%v reply append entries %v", rf.raftInfo(), reply.String())
 }
 
-func (rf *Raft) synchronizeLog(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	reply.Term = rf.currentTerm
-
+func (rf *Raft) synchronizeLog(args *AppendEntriesArgs, reply *AppendEntriesReply, needPersist *bool) {
 	if args.PrevLogIndex < rf.lastIncludedIndex {
 		reply.ConflictIndex = rf.lastIncludedIndex+1
 		reply.ConflictTerm = -1
@@ -99,7 +95,7 @@ func (rf *Raft) synchronizeLog(args *AppendEntriesArgs, reply *AppendEntriesRepl
 		reply.Success = false
 		// 解决日志冲突
 		rf.log = rf.log[0:rf.getRealIndex(args.PrevLogIndex)]
-		rf.persist()
+		*needPersist = true
 		return
 	}
 
@@ -118,7 +114,7 @@ func (rf *Raft) synchronizeLog(args *AppendEntriesArgs, reply *AppendEntriesRepl
 		}
 	}
 	reply.Success = true
-	rf.persist()
+	*needPersist = true
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -178,7 +174,6 @@ func (rf *Raft) syncAppendEntries(i int) {
 				if reply.Success {
 					rf.matchIndex[id] = args.PrevLogIndex + len(args.Entries)
 					rf.nextIndex[id] = rf.matchIndex[id] + 1
-
 					quorumIndex := rf.getQuorumIndex()
 					// 领导人只能提交当前任期的日志
 					if quorumIndex > rf.commitIndex && rf.log[rf.getRealIndex(quorumIndex)].Term == rf.currentTerm {
