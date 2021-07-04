@@ -33,7 +33,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 			rf.persist()
 		}
 	}()
-	DPrintf("%v receive install snapshot %v", rf.raftInfo(), args.String())
+	DPrintf("%v receive install snapshot %v", rf.String(), args.String())
 
 	if args.Term < rf.currentTerm {
 		return
@@ -65,7 +65,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		}
 	}()
 
-	DPrintf("%v reply install snapshot %v", rf.raftInfo(), reply.String())
+	DPrintf("%v reply install snapshot %v", rf.String(), reply.String())
 }
 
 func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
@@ -74,7 +74,7 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 }
 
 func (rf *Raft) syncInstallSnapshot(i int) {
-	DPrintf("%v send install snapshot to %d", rf.raftInfo(), i)
+	DPrintf("%v send install snapshot to %d", rf.String(), i)
 	args := &InstallSnapshotArgs{
 		Term:              rf.currentTerm,
 		LeaderId:          rf.me,
@@ -91,7 +91,7 @@ func (rf *Raft) syncInstallSnapshot(i int) {
 			if ok {
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
-				DPrintf("%v receive install snapshot reply from %d", rf.raftInfo(), id)
+				DPrintf("%v receive install snapshot reply from %d", rf.String(), id)
 
 				if reply.Term > rf.currentTerm {
 					rf.beFollower(reply.Term)
@@ -133,7 +133,7 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 	rf.lastIncludedIndex = lastIncludedIndex
 	rf.lastIncludedTerm = lastIncludedTerm
 	rf.persister.SaveStateAndSnapshot(rf.getPersistState(), snapshot)
-	rf.commitIndex = maxInt(rf.commitIndex, lastIncludedIndex)
+	rf.commitIndex = lastIncludedIndex
 	rf.lastApplied = lastIncludedIndex
 	return true
 }
@@ -146,7 +146,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("%v creat snapshot before index: %d", rf.raftInfo(), index)
+	DPrintf("%v creat snapshot before index: %d", rf.String(), index)
 
 	if index <= rf.lastIncludedIndex {
 		return

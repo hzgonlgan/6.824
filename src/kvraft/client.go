@@ -1,13 +1,22 @@
 package kvraft
 
-import "6_824/labrpc"
+import (
+	"6_824/labrpc"
+	"fmt"
+)
 import "crypto/rand"
 import "math/big"
-
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+	me       int64
+	seqNum   int64
+	leaderId int
+}
+
+func (ck *Clerk) String() string {
+	return fmt.Sprintf("[Id: %v, SeqNum: %v, LeaderId: %v]", ck.me, ck.seqNum, ck.leaderId)
 }
 
 func nrand() int64 {
@@ -21,10 +30,13 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	ck.me = nrand()
+	ck.seqNum = 0
+	ck.leaderId = 0
 	return ck
 }
 
-// Get
+//
 // fetch the current value for a key.
 // returns "" if the key does not exist.
 // keeps trying forever in the face of all other errors.
@@ -37,12 +49,31 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-
 	// You will have to modify this function.
-	return ""
+	args := &GetArgs{
+		Key:    key,
+		Id:     ck.me,
+		SeqNum: ck.seqNum,
+	}
+	ck.seqNum++
+	for {
+		reply := &GetReply{}
+		if !ck.servers[ck.leaderId].Call("KVServer.Get", args, reply) ||
+			reply.Err == ErrWrongLeader {
+			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
+			DPrintf("%v args: %v, wrong leader", ck.String(), args.String())
+			continue
+		}
+		if reply.Err == OK {
+			DPrintf("%v args: %v, success return: %v", ck.String(), args.String(), reply.Value)
+			return reply.Value
+		}
+		DPrintf("%v args: %v, no key", ck.String(), args.String())
+		return ""
+	}
 }
 
-// PutAppend
+//
 // shared by Put and Append.
 //
 // you can send an RPC with code like this:
@@ -54,11 +85,34 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	args := &PutAppendArgs{
+		Key:    key,
+		Value:  value,
+		Op:     op,
+		Id:     ck.me,
+		SeqNum: ck.seqNum,
+	}
+	ck.seqNum++
+	for {
+		reply := &PutAppendReply{}
+		if !ck.servers[ck.leaderId].Call("KVServer.PutAppend", args, reply) ||
+			reply.Err == ErrWrongLeader {
+			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
+			DPrintf("%v args: %v, wrong leader", ck.String(), args.String())
+			continue
+		}
+		if reply.Err == OK {
+			DPrintf("%v args: %v, success return", ck.String(), args.String())
+			return
+		}
+		panic("unknown PutAppend reply")
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
 	ck.PutAppend(key, value, "Put")
 }
+
 func (ck *Clerk) Append(key string, value string) {
 	ck.PutAppend(key, value, "Append")
 }

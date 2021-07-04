@@ -41,7 +41,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.persist()
 		}
 	}()
-	DPrintf("%v receive request vote %v", rf.raftInfo(), args.String())
+	DPrintf("%v receive request vote %v", rf.String(), args.String())
 
 	if args.Term < rf.currentTerm {
 		return
@@ -63,7 +63,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = true
 	}
 
-	DPrintf("%v reply request vote %v", rf.raftInfo(), reply.String())
+	DPrintf("%v reply request vote %v", rf.String(), reply.String())
 }
 
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
@@ -72,7 +72,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 func (rf *Raft) broadcastRequestVote() {
-	DPrintf("%v start election", rf.raftInfo())
+	DPrintf("%v start election", rf.String())
 	rf.votes = 1
 	args := &RequestVoteArgs{
 		Term:         rf.currentTerm,
@@ -85,7 +85,7 @@ func (rf *Raft) broadcastRequestVote() {
 		if i == rf.me {
 			continue
 		}
-		DPrintf("%v send request vote to %d", rf.raftInfo(), i)
+		DPrintf("%v send request vote to %d", rf.String(), i)
 		go func(id int) {
 			reply := &RequestVoteReply{}
 			ch := make(chan bool, 1)
@@ -95,7 +95,7 @@ func (rf *Raft) broadcastRequestVote() {
 				if ok {
 					rf.mu.Lock()
 					defer rf.mu.Unlock()
-					DPrintf("%v receive request vote reply from %d", rf.raftInfo(), id)
+					DPrintf("%v receive request vote reply from %d", rf.String(), id)
 
 					if reply.Term > rf.currentTerm {
 						rf.beFollower(reply.Term)
@@ -109,7 +109,7 @@ func (rf *Raft) broadcastRequestVote() {
 
 					if reply.VoteGranted {
 						rf.votes++
-						DPrintf("%v votes: %d, receive vote from %d", rf.raftInfo(), rf.votes, id)
+						DPrintf("%v votes: %d, receive vote from %d", rf.String(), rf.votes, id)
 						if rf.votes > len(rf.peers)/2 {
 							rf.beLeader()
 						}

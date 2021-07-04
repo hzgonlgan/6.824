@@ -130,7 +130,7 @@ type Raft struct {
 	leftElectionTicks  int
 }
 
-func (rf *Raft) raftInfo() string {
+func (rf *Raft) String() string {
 	return fmt.Sprintf("[%d %v term:%d voteFor: %d, logLen: %d, lastIndex: %d, lastTerm: %d, commitIndex: %d, lastApplied: %d]\n",
 		rf.me, rf.role.String(), rf.currentTerm, rf.votedFor, len(rf.log)-1, rf.getLastLogIndex(), rf.getLastLogTerm(), rf.commitIndex, rf.lastApplied)
 }
@@ -203,7 +203,7 @@ func (rf *Raft) readPersist(data []byte) {
 		d.Decode(&log) != nil ||
 		d.Decode(&lastIncludedIndex) != nil ||
 		d.Decode(&lastIncludedTerm) != nil {
-		DPrintf("%v fail to read persist", rf.raftInfo())
+		DPrintf("%v fail to read persist", rf.String())
 	} else {
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
@@ -243,9 +243,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.log = append(rf.log, entry)
 		rf.matchIndex[rf.me] = index
 		rf.persist()
-		// 如果在这里发送 AppendEntries，可能会用新 Term 发送，造成错误
-		//rf.leftHeartbeatTicks = 0
-		DPrintf("%v start agreement on entry index: %v", rf.raftInfo(), entry.Index)
+		rf.leftHeartbeatTicks = 0
+		DPrintf("%v start agreement on entry index: %v", rf.String(), entry.Index)
 	}
 	return index, term, isLeader
 }

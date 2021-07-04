@@ -28,7 +28,9 @@ func (rf *Raft) applyLoop() {
 	rf.mu.Lock()
 	for !rf.killed() {
 		if rf.lastApplied < rf.commitIndex {
-			entry := rf.log[rf.getRealIndex(rf.lastApplied+1)]
+			// 释放锁期间，可能由于安装 Leader 发送的快照而改变 lastApplied，故应先增加
+			rf.lastApplied++
+			entry := rf.log[rf.getRealIndex(rf.lastApplied)]
 			applyMsg := ApplyMsg{
 				CommandValid: true,
 				Command:      entry.Command,
@@ -41,8 +43,7 @@ func (rf *Raft) applyLoop() {
 				return
 			}
 			rf.mu.Lock()
-			rf.lastApplied++
-			DPrintf("%v applied entry index: %v", rf.raftInfo(), entry.Index)
+			DPrintf("%v applied entry index: %v", rf.String(), entry.Index)
 		} else {
 			rf.applyCond.Wait()
 		}
@@ -70,13 +71,13 @@ func (rf *Raft) timeHandler() {
 			rf.startElection()
 		}
 	} else {
-		DPrintf("%v in time_handler, unknown raft role - %v", rf.raftInfo(), rf.role)
+		panic("unknown raft role")
 	}
 }
 
 func (rf *Raft) beCandidate() {
 	rf.role = Candidate
-	DPrintf("%v change to candidate", rf.raftInfo())
+	DPrintf("%v change to candidate", rf.String())
 }
 
 func (rf *Raft) beFollower(term int) {
@@ -86,7 +87,7 @@ func (rf *Raft) beFollower(term int) {
 	if rf.role == Leader {
 		rf.leftElectionTicks = rf.randElectionTimeoutTicks()
 	}
-	DPrintf("%v change to follower", rf.raftInfo())
+	DPrintf("%v change to follower", rf.String())
 }
 
 func (rf *Raft) beLeader() {
@@ -101,7 +102,7 @@ func (rf *Raft) beLeader() {
 	}
 	rf.leftHeartbeatTicks = heartbeatTimeoutTicks
 	rf.broadcastHeartbeat()
-	DPrintf("%v change to leader", rf.raftInfo())
+	DPrintf("%v change to leader", rf.String())
 }
 
 func (rf *Raft) startElection() {

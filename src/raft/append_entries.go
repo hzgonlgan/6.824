@@ -42,7 +42,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.persist()
 		}
 	}()
-	DPrintf("%v receive append entries %v", rf.raftInfo(), args.String())
+	DPrintf("%v receive append entries %v", rf.String(), args.String())
 
 	if args.Term < rf.currentTerm {
 		return
@@ -64,7 +64,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.leftElectionTicks = rf.randElectionTimeoutTicks()
 	rf.synchronizeLog(args, reply, &needPersist)
 
-	DPrintf("%v reply append entries %v", rf.raftInfo(), reply.String())
+	DPrintf("%v reply append entries %v", rf.String(), reply.String())
 }
 
 func (rf *Raft) synchronizeLog(args *AppendEntriesArgs, reply *AppendEntriesReply, needPersist *bool) {
@@ -138,7 +138,7 @@ func (rf *Raft) broadcastHeartbeat() {
 }
 
 func (rf *Raft) syncAppendEntries(i int) {
-	DPrintf("%v send append entries to %d", rf.raftInfo(), i)
+	DPrintf("%v send append entries to %d", rf.String(), i)
 	prevLogIndex := rf.nextIndex[i] - 1
 	entries := rf.log[rf.getRealIndex(rf.nextIndex[i]):]
 	entriesCopy := make([]LogEntry, len(entries))
@@ -160,7 +160,7 @@ func (rf *Raft) syncAppendEntries(i int) {
 			if ok {
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
-				DPrintf("%v receive append entries reply from %d", rf.raftInfo(), id)
+				DPrintf("%v receive append entries reply from %d", rf.String(), id)
 
 				if reply.Term > rf.currentTerm {
 					rf.beFollower(reply.Term)
