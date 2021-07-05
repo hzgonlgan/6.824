@@ -120,7 +120,7 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if lastIncludedIndex <= rf.commitIndex  {
+	if lastIncludedIndex <= rf.lastApplied  {
 		return false
 	}
 

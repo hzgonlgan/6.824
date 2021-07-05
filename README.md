@@ -13,8 +13,12 @@
 
 ## Lab 3: Fault-tolerant Key/Value Service
 
-- [ ] Part 3A: Key/value service without snapshots
-- [ ] Part 3B: Key/value service with snapshots
+- [x] Part 3A: Key/value service without snapshots
+- [x] Part 3B: Key/value service with snapshots
+
+![Lab3](img/Lab3.png)
+
+![Lab3](img/TestSpeed3A.png)
 
 ## Lab 4: Sharded Key/Value Service
 
