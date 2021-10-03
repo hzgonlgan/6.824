@@ -22,5 +22,6 @@
 
 ## Lab 4: Sharded Key/Value Service
 
-- [ ] Part 4A: The Shard controller
+- [x] Part 4A: The Shard controller
+  ![Lab4A](img/Lab4A.png)
 - [ ] Part 4B: Sharded Key/Value Server
