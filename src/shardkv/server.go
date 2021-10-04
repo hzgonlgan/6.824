@@ -117,6 +117,7 @@ func (kv *ShardKV) handleRequest(op *Op) (err Err, value string) {
 	kv.mu.Unlock()
 	select {
 	case ret := <-notifyCh:
+		kv.mu.Lock()
 		if !op.equal(&ret) {
 			err = ErrWrongLeader
 		} else {
@@ -129,7 +130,8 @@ func (kv *ShardKV) handleRequest(op *Op) (err Err, value string) {
 				}
 			}
 		}
-		kv.deleteNotifyCh(index)
+		delete(kv.notifyChs, index)
+		kv.mu.Unlock()
 		return
 	case <-time.After(OpTimeout):
 		err = ErrWrongLeader
