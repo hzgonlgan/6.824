@@ -36,10 +36,12 @@ func nrand() int64 {
 }
 
 type Clerk struct {
-	sm       *shardctrler.Clerk
-	config   shardctrler.Config
-	make_end func(string) *labrpc.ClientEnd
+	sm      *shardctrler.Clerk
+	config  shardctrler.Config
+	makeEnd func(string) *labrpc.ClientEnd
 	// You will have to modify this struct.
+	me     int64
+	seqNum int64
 }
 
 //
@@ -47,15 +49,18 @@ type Clerk struct {
 //
 // ctrlers[] is needed to call shardctrler.MakeClerk().
 //
-// make_end(servername) turns a server name from a
+// makeEnd(servername) turns a server name from a
 // Config.Groups[gid][i] into a labrpc.ClientEnd on which you can
 // send RPCs.
 //
-func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.ClientEnd) *Clerk {
+func MakeClerk(ctrlers []*labrpc.ClientEnd, makeEnd func(string) *labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.sm = shardctrler.MakeClerk(ctrlers)
-	ck.make_end = make_end
+	ck.makeEnd = makeEnd
 	// You'll have to add code here.
+	ck.config = ck.sm.Query(-1)
+	ck.me = nrand()
+	ck.seqNum = 0
 	return ck
 }
 
@@ -66,16 +71,19 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 // You will have to modify this function.
 //
 func (ck *Clerk) Get(key string) string {
-	args := GetArgs{}
-	args.Key = key
-
+	args := GetArgs{
+		Key:    key,
+		Id:     ck.me,
+		SeqNum: ck.seqNum,
+	}
+	ck.seqNum++
 	for {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
 			// try each server for the shard.
 			for si := 0; si < len(servers); si++ {
-				srv := ck.make_end(servers[si])
+				srv := ck.makeEnd(servers[si])
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
@@ -91,8 +99,6 @@ func (ck *Clerk) Get(key string) string {
 		// ask controler for the latest configuration.
 		ck.config = ck.sm.Query(-1)
 	}
-
-	return ""
 }
 
 //
@@ -100,18 +106,20 @@ func (ck *Clerk) Get(key string) string {
 // You will have to modify this function.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := PutAppendArgs{}
-	args.Key = key
-	args.Value = value
-	args.Op = op
-
-
+	args := PutAppendArgs{
+		Key:    key,
+		Value:  value,
+		Op:     op,
+		Id:     ck.me,
+		SeqNum: ck.seqNum,
+	}
+	ck.seqNum++
 	for {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
 			for si := 0; si < len(servers); si++ {
-				srv := ck.make_end(servers[si])
+				srv := ck.makeEnd(servers[si])
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
 				if ok && reply.Err == OK {
