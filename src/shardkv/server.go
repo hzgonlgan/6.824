@@ -158,7 +158,9 @@ func (kv *ShardKV) applier() {
 					}
 					kv.lastSeqNums[op.Id] = op.SeqNum
 				}
-				kv.getNotifyCh(msg.CommandIndex, false) <- op
+				if notifyCh := kv.getNotifyCh(msg.CommandIndex, false); notifyCh != nil {
+					notifyCh <- op
+				}
 				if kv.needSnapshot() {
 					kv.takeSnapshot(msg.CommandIndex)
 				}
