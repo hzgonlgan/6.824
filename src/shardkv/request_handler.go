@@ -1,7 +1,6 @@
 package shardkv
 
 import (
-	"fmt"
 	"time"
 )
 
@@ -47,7 +46,7 @@ func (kv *ShardKV) Migrate(args *MigrateArgs, reply *MigrateReply) {
 	}
 	err, _ := kv.handleRequest(&op)
 	if err == OK {
-		 reply.Ok = true
+		reply.Ok = true
 	}
 }
 
@@ -63,9 +62,6 @@ func (kv *ShardKV) handleRequest(op *Op) (err Err, value string) {
 	kv.mu.Unlock()
 	select {
 	case result := <-notifyCh:
-		if _, isLeader := kv.rf.GetState(); isLeader {
-			fmt.Printf("op: %v, result: %v\n", op, result)
-		}
 		kv.mu.Lock()
 		if !isMatch(op, &result) {
 			err = ErrWrongLeader
