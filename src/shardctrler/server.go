@@ -40,8 +40,6 @@ type ShardCtrler struct {
 }
 
 func (sc *ShardCtrler) getNotifyCh(index int, createIfNotExist bool) chan Op {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
 	if _, ok := sc.notifyChs[index]; !ok {
 		if !createIfNotExist {
 			return nil
@@ -130,7 +128,9 @@ func (sc *ShardCtrler) handleRequest(op *Op) (wrongLeader bool) {
 	if !isLeader {
 		return
 	}
+	sc.mu.Lock()
 	notifyCh := sc.getNotifyCh(index, true)
+	sc.mu.Unlock()
 	select {
 	case result := <-notifyCh:
 		sc.deleteNotifyCh(index)
@@ -156,10 +156,10 @@ func (sc *ShardCtrler) applier() {
 			op := msg.Command.(Op)
 			sc.mu.Lock()
 			sc.applyOp(&op)
-			sc.mu.Unlock()
 			if notifyCh := sc.getNotifyCh(msg.CommandIndex, false); notifyCh != nil {
 				notifyCh <- op
 			}
+			sc.mu.Unlock()
 		case <-sc.quitCh:
 			return
 		}
