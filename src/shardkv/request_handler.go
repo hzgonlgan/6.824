@@ -56,7 +56,7 @@ func (kv *ShardKV) handleRequest(op *Op) (err Err, value string) {
 	}
 	kv.mu.Lock()
 	notifyCh := kv.getNotifyCh(index, true)
-	DPrintf("%v process request: %v", kv.String(), *op)
+	kv.DPrintf("%v process request: %v", kv.String(), *op)
 	kv.mu.Unlock()
 	select {
 	case result := <-notifyCh:

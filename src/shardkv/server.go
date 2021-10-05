@@ -24,9 +24,12 @@ func init() {
 	log.SetFlags(0)
 }
 
-func DPrintf(format string, a ...interface{}) {
+func (kv *ShardKV) DPrintf(format string, a ...interface{}) {
 	if Debug {
-		log.Printf(format, a...)
+		//if _, isLeader := kv.rf.GetState(); isLeader && kv.gid == 100 {
+			log.Printf(format, a...)
+			log.Printf("")
+		//}
 	}
 	return
 }
@@ -176,7 +179,7 @@ type ShardKV struct {
 }
 
 func (kv *ShardKV) String() string {
-	return fmt.Sprintf("[Id: %v, gid: %v]\t", kv.me, kv.gid)
+	return fmt.Sprintf("[Id: %v, gid: %v, pending: %v]\n[config: %v]\n", kv.me, kv.gid, kv.pendingShards, kv.config.Shards)
 }
 
 func (kv *ShardKV) getNotifyCh(index int, createIfNotExist bool) chan Result {
@@ -197,6 +200,7 @@ func (kv *ShardKV) commandApplier() {
 				kv.mu.Lock()
 				op := msg.Command.(Op)
 				result := kv.applyOp(&op)
+				kv.DPrintf("%vop: %v, result: %v", kv.String(), op, result)
 				if notifyCh := kv.getNotifyCh(msg.CommandIndex, false); notifyCh != nil {
 					notifyCh <- *result
 				}
@@ -350,7 +354,7 @@ func (kv *ShardKV) needSnapshot() bool {
 }
 
 func (kv *ShardKV) takeSnapshot(index int) {
-	DPrintf("%v start take snapshot", kv.String())
+	kv.DPrintf("%v start take snapshot", kv.String())
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	e.Encode(kv.config)
@@ -360,7 +364,7 @@ func (kv *ShardKV) takeSnapshot(index int) {
 }
 
 func (kv *ShardKV) applySnapshot(snapshot []byte) {
-	DPrintf("%v start apply snapshot", kv.String())
+	kv.DPrintf("%v start apply snapshot", kv.String())
 	r := bytes.NewBuffer(snapshot)
 	d := labgob.NewDecoder(r)
 	var config shardctrler.Config
@@ -369,7 +373,7 @@ func (kv *ShardKV) applySnapshot(snapshot []byte) {
 	if d.Decode(&config) != nil ||
 		d.Decode(&shards) != nil ||
 		d.Decode(&pendingShards) != nil {
-		DPrintf("%v fail to apply snapshot", kv.String())
+		kv.DPrintf("%v fail to apply snapshot", kv.String())
 	} else {
 		kv.config = config
 		kv.shards = shards
