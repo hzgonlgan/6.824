@@ -412,7 +412,7 @@ func (kv *ShardKV) shardMigrator() {
 				}(args, serverss[i])
 			}
 			wg.Wait()
-			//time.Sleep(ShardMigrateInterval)
+			time.Sleep(ShardMigrateInterval)
 			kv.mu.Lock()
 		} else {
 			kv.migrateCond.Wait()
