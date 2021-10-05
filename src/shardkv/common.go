@@ -46,3 +46,13 @@ type GetReply struct {
 	Err   Err
 	Value string
 }
+
+type MigrateArgs struct {
+	Id    int
+	Num   int
+	Shard Shard
+}
+
+type MigrateReply struct {
+	Ok bool
+}

@@ -2,6 +2,7 @@ package shardkv
 
 import (
 	"6_824/labrpc"
+	"6_824/shardctrler"
 	"bytes"
 	"fmt"
 	"log"
@@ -13,8 +14,9 @@ import "sync"
 import "6_824/labgob"
 
 const (
-	Debug     = true
-	OpTimeout = time.Millisecond * 500
+	Debug                = true
+	OpTimeout            = time.Millisecond * 500
+	ConfigUpdateInterval = time.Millisecond * 100
 )
 
 func init() {
@@ -28,15 +30,75 @@ func DPrintf(format string, a ...interface{}) {
 	return
 }
 
+const (
+	Get      = "Get"
+	Put      = "Put"
+	Append   = "Append"
+	Config   = "Config"
+	InShard  = "InShard"
+	OutShard = "OutShard"
+)
+
 type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	Type   string
 	Key    string
 	Value  string
-	Type   string // "Get" or "Put" or "Append"
 	Id     int64
 	SeqNum int64
+	Config *shardctrler.Config
+	Args   *MigrateArgs
+}
+
+type Result struct {
+	Type     string
+	Err      Err
+	Value    string
+	Id       int64
+	SeqNum   int64
+	ShardId  int
+	ShardNum int
+}
+
+func (op *Op) isMatch(result *Result) bool {
+	if op.Type != result.Type {
+		return false
+	}
+	switch op.Type {
+	case Get:
+		fallthrough
+	case Put:
+		fallthrough
+	case Append:
+		return op.Id == result.Id && op.SeqNum == result.SeqNum
+	case InShard:
+		fallthrough
+	case OutShard:
+		args := op.Args
+		return args.Id == result.ShardId && args.Num == result.ShardNum
+	default:
+		return false
+	}
+}
+
+func (kv *ShardKV) isDuplicate(op *Op) bool {
+	switch op.Type {
+	case Put:
+		fallthrough
+	case Append:
+		if lastSeqNums, ok := kv.lastSeqNums[op.Id]; !ok || op.SeqNum > lastSeqNums {
+			kv.lastSeqNums[op.Id] = op.SeqNum
+			return false
+		} else {
+			return true
+		}
+	default:
+		return true
+	}
+}
+
+type Shard struct {
+	Database    map[string]string
+	LastSeqNums map[int64]int64
 }
 
 type ShardKV struct {
@@ -46,47 +108,43 @@ type ShardKV struct {
 	applyCh      chan raft.ApplyMsg
 	makeEnd      func(string) *labrpc.ClientEnd
 	gid          int
+	mck          *shardctrler.Clerk
 	ctrlers      []*labrpc.ClientEnd
 	maxraftstate int // snapshot if log grows this big
 	quitCh       chan struct{}
 	dead         int32
 	// Your definitions here.
-	database    map[string]string
-	lastSeqNums map[int64]int64
+	config        shardctrler.Config
+	shards        map[int]Shard
+	servedShards  map[int]bool
+	pendingShards []int
 
 	persister *raft.Persister
-	notifyChs map[int]chan Op
-}
+	notifyChs map[int]chan Result
 
-func (srcOp *Op) equal(desOp *Op) bool {
-	return srcOp.Id == desOp.Id && srcOp.SeqNum == desOp.SeqNum
+	database    map[string]string
+	lastSeqNums map[int64]int64
 }
 
 func (kv *ShardKV) String() string {
 	return fmt.Sprintf("[Id: %v, gid: %v]\t", kv.me, kv.gid)
 }
 
-func (kv *ShardKV) getNotifyCh(index int, createIfNotExist bool) chan Op {
+func (kv *ShardKV) getNotifyCh(index int, createIfNotExist bool) chan Result {
 	if _, ok := kv.notifyChs[index]; !ok {
 		if !createIfNotExist {
 			return nil
 		}
-		kv.notifyChs[index] = make(chan Op, 1)
+		kv.notifyChs[index] = make(chan Result, 1)
 	}
 	return kv.notifyChs[index]
-}
-
-func (kv *ShardKV) deleteNotifyCh(index int) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	delete(kv.notifyChs, index)
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	op := Op{
 		Key:    args.Key,
-		Type:   "Get",
+		Type:   Get,
 		Id:     args.Id,
 		SeqNum: args.SeqNum,
 	}
@@ -116,50 +174,41 @@ func (kv *ShardKV) handleRequest(op *Op) (err Err, value string) {
 	DPrintf("%v process request: %v", kv.String(), *op)
 	kv.mu.Unlock()
 	select {
-	case ret := <-notifyCh:
+	case result := <-notifyCh:
+		if _, isLeader := kv.rf.GetState(); isLeader {
+			fmt.Printf("op: %v, result: %v\n", op, result)
+		}
 		kv.mu.Lock()
-		if !op.equal(&ret) {
+		if !op.isMatch(&result) {
 			err = ErrWrongLeader
 		} else {
-			err = OK
-			if op.Type == "Get" {
-				if v, ok := kv.database[op.Key]; ok {
-					value = v
-				} else {
-					err = ErrNoKey
-				}
-			}
+			err = result.Err
+			value = result.Value
 		}
 		delete(kv.notifyChs, index)
 		kv.mu.Unlock()
 		return
 	case <-time.After(OpTimeout):
 		err = ErrWrongLeader
-		kv.deleteNotifyCh(index)
+		kv.mu.Lock()
+		delete(kv.notifyChs, index)
+		kv.mu.Unlock()
 		return
 	case <-kv.quitCh:
 		return
 	}
 }
 
-func (kv *ShardKV) applier() {
+func (kv *ShardKV) commandApplier() {
 	for !kv.killed() {
 		select {
 		case msg := <-kv.applyCh:
 			if msg.CommandValid {
 				kv.mu.Lock()
 				op := msg.Command.(Op)
-				if lastSeqNum, ok := kv.lastSeqNums[op.Id]; !ok || op.SeqNum > lastSeqNum {
-					switch op.Type {
-					case "Put":
-						kv.database[op.Key] = op.Value
-					case "Append":
-						kv.database[op.Key] += op.Value
-					}
-					kv.lastSeqNums[op.Id] = op.SeqNum
-				}
+				result := kv.applyOp(&op)
 				if notifyCh := kv.getNotifyCh(msg.CommandIndex, false); notifyCh != nil {
-					notifyCh <- op
+					notifyCh <- *result
 				}
 				if kv.needSnapshot() {
 					kv.takeSnapshot(msg.CommandIndex)
@@ -180,6 +229,58 @@ func (kv *ShardKV) applier() {
 			return
 		}
 	}
+}
+
+func (kv *ShardKV) applyOp(op *Op) (result *Result) {
+	result = &Result{
+		Type:   op.Type,
+		Err:    OK,
+		Id:     op.Id,
+		SeqNum: op.SeqNum,
+	}
+	switch op.Type {
+	case Get:
+		kv.processGet(op, result)
+	case Put:
+		kv.processPut(op, result)
+	case Append:
+		kv.processAppend(op, result)
+	}
+	return result
+}
+
+func (kv *ShardKV) processGet(op *Op, result *Result) {
+	if value, ok := kv.database[op.Key]; ok {
+		result.Value = value
+	} else {
+		result.Err = ErrNoKey
+	}
+}
+
+func (kv *ShardKV) processPut(op *Op, result *Result) {
+	if kv.isDuplicate(op) {
+		return
+	}
+	kv.database[op.Key] = op.Value
+}
+
+func (kv *ShardKV) processAppend(op *Op, result *Result) {
+	if kv.isDuplicate(op) {
+		return
+	}
+	kv.database[op.Key] += op.Value
+}
+
+func (kv *ShardKV) processConfig(op *Op, result *Result) {
+
+}
+
+func (kv *ShardKV) processInShard(op *Op, result *Result) {
+
+}
+
+func (kv *ShardKV) processOutShard(op *Op, result *Result) {
+
 }
 
 func (kv *ShardKV) needSnapshot() bool {
@@ -210,6 +311,30 @@ func (kv *ShardKV) applySnapshot(snapshot []byte) {
 	} else {
 		kv.database = database
 		kv.lastSeqNums = lastSeqNums
+	}
+}
+
+func (kv *ShardKV) configUpdater() {
+	for !kv.killed() {
+		kv.mu.Lock()
+		curNum := kv.config.Num
+		kv.mu.Unlock()
+		if config := kv.mck.Query(curNum + 1); config.Num == curNum+1 {
+
+		}
+		time.Sleep(ConfigUpdateInterval)
+	}
+}
+
+func (kv *ShardKV) shardSender() {
+	for !kv.killed() {
+		kv.mu.Lock()
+		curNum := kv.config.Num
+		kv.mu.Unlock()
+		newConfig := kv.mck.Query(-1)
+		if newConfig.Num > curNum {
+
+		}
 	}
 }
 
@@ -272,21 +397,24 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.ctrlers = ctrlers
 	// Your initialization code here.
 
-	// Use something like this to talk to the shardctrler:
-	// kv.mck = shardctrler.MakeClerk(kv.ctrlers)
-
+	kv.mck = shardctrler.MakeClerk(kv.ctrlers)
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	kv.quitCh = make(chan struct{})
 
+	kv.shards = make(map[int]Shard)
+	kv.config = kv.mck.Query(-1)
+
+	kv.persister = persister
+	kv.notifyChs = make(map[int]chan Result)
+
+	//kv.applySnapshot(persister.ReadSnapshot())
+
 	kv.database = make(map[string]string)
 	kv.lastSeqNums = make(map[int64]int64)
-	kv.persister = persister
-	kv.notifyChs = make(map[int]chan Op)
-
-	kv.applySnapshot(persister.ReadSnapshot())
-
-	go kv.applier()
+	go kv.commandApplier()
+	//go kv.configUpdater()
+	//go kv.shardSender()
 
 	return kv
 }
