@@ -46,8 +46,8 @@ type Op struct {
 	Value  string
 	Id     int64
 	SeqNum int64
-	Config *shardctrler.Config
-	Args   *MigrateArgs
+	Config shardctrler.Config
+	Args   MigrateArgs
 }
 
 type Result struct {
@@ -308,7 +308,7 @@ func (kv *ShardKV) processConfig(op *Op, result *Result) {
 		}
 		kv.pendingShards[i] = true
 	}
-	kv.config = *newConfig
+	kv.config = newConfig
 	kv.migrateCond.Signal()
 }
 
@@ -385,7 +385,7 @@ func (kv *ShardKV) configUpdater() {
 		if config := kv.mck.Query(curNum + 1); config.Num == curNum+1 {
 			op := Op{
 				Type:   Config,
-				Config: &config,
+				Config: config,
 			}
 			kv.rf.Start(op)
 		}
@@ -402,37 +402,40 @@ func (kv *ShardKV) shardMigrator() {
 			var wg sync.WaitGroup
 			for i, args := range argss {
 				wg.Add(1)
-				go func(args *MigrateArgs, servers []string) {
-					kv.sendShards(args, servers)
+				go func(args MigrateArgs, servers []string) {
+					kv.sendShards(&args, servers)
 					wg.Done()
-				}(&args, serverss[i])
+				}(args, serverss[i])
 			}
 			wg.Wait()
+			//time.Sleep(ShardMigrateInterval)
 			kv.mu.Lock()
 		} else {
 			kv.migrateCond.Wait()
 		}
 	}
-
+	kv.mu.Unlock()
 }
 
 func (kv *ShardKV) sendShards(args *MigrateArgs, servers []string) {
 	for _, server := range servers {
 		end := kv.makeEnd(server)
 		var reply MigrateReply
+		newArgs := MigrateArgs{
+			Id:  args.Id,
+			Num: args.Num,
+		}
 		ok := end.Call("ShardKV.Migrate", args, &reply)
 		if ok && reply.Ok {
 			kv.mu.Lock()
-			if args.Num != kv.config.Num {
-				return
-			}
-			if !kv.pendingShards[args.Id] {
+			if newArgs.Num != kv.config.Num || !kv.pendingShards[newArgs.Id] {
+				kv.mu.Unlock()
 				return
 			}
 			kv.mu.Unlock()
 			op := Op{
 				Type: OutShard,
-				Args: args,
+				Args: newArgs,
 			}
 			kv.rf.Start(op)
 			return
@@ -490,8 +493,6 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
-	labgob.Register(config{})
-	labgob.Register(MigrateArgs{})
 
 	kv := new(ShardKV)
 	kv.me = me

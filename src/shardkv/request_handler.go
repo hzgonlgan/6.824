@@ -29,20 +29,18 @@ func (kv *ShardKV) Migrate(args *MigrateArgs, reply *MigrateReply) {
 	kv.mu.Lock()
 	reply.Ok = false
 	if args.Num > kv.config.Num {
+		kv.mu.Unlock()
 		return
 	}
-	if args.Num < kv.config.Num {
+	if args.Num < kv.config.Num || !kv.pendingShards[args.Id] {
 		reply.Ok = true
-		return
-	}
-	if !kv.pendingShards[args.Id] {
-		reply.Ok = true
+		kv.mu.Unlock()
 		return
 	}
 	kv.mu.Unlock()
 	op := Op{
 		Type: InShard,
-		Args: args,
+		Args: *args,
 	}
 	err, _ := kv.handleRequest(&op)
 	if err == OK {
