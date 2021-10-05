@@ -14,9 +14,10 @@ import "sync"
 import "6_824/labgob"
 
 const (
-	Debug                = true
+	Debug                = false
 	OpTimeout            = time.Millisecond * 500
 	ConfigUpdateInterval = time.Millisecond * 100
+	ShardMigrateInterval = time.Millisecond * 100
 )
 
 func init() {
@@ -59,7 +60,7 @@ type Result struct {
 	ShardNum int
 }
 
-func (op *Op) isMatch(result *Result) bool {
+func isMatch(op *Op, result *Result) bool {
 	if op.Type != result.Type {
 		return false
 	}
@@ -71,8 +72,6 @@ func (op *Op) isMatch(result *Result) bool {
 	case Append:
 		return op.Id == result.Id && op.SeqNum == result.SeqNum
 	case InShard:
-		fallthrough
-	case OutShard:
 		args := op.Args
 		return args.Id == result.ShardId && args.Num == result.ShardNum
 	default:
@@ -85,8 +84,9 @@ func (kv *ShardKV) isDuplicate(op *Op) bool {
 	case Put:
 		fallthrough
 	case Append:
-		if lastSeqNums, ok := kv.lastSeqNums[op.Id]; !ok || op.SeqNum > lastSeqNums {
-			kv.lastSeqNums[op.Id] = op.SeqNum
+		lastSeqNums := kv.shards[key2shard(op.Key)].LastSeqNums
+		if lastSeqNum, ok := lastSeqNums[op.Id]; !ok || op.SeqNum > lastSeqNum {
+			lastSeqNums[op.Id] = op.SeqNum
 			return false
 		} else {
 			return true
@@ -96,9 +96,62 @@ func (kv *ShardKV) isDuplicate(op *Op) bool {
 	}
 }
 
+func (kv *ShardKV) canServe(op *Op) bool {
+	shard := key2shard(op.Key)
+	return kv.config.Shards[shard] == kv.gid && !kv.pendingShards[shard]
+}
+
 type Shard struct {
 	Database    map[string]string
 	LastSeqNums map[int64]int64
+}
+
+func makeShard() *Shard {
+	shard := &Shard{
+		Database:    make(map[string]string),
+		LastSeqNums: make(map[int64]int64),
+	}
+	return shard
+}
+
+func copyShard(src *Shard) *Shard {
+	des := makeShard()
+	for k, v := range src.Database {
+		des.Database[k] = v
+	}
+	for k, v := range src.LastSeqNums {
+		des.LastSeqNums[k] = v
+	}
+	return des
+}
+
+func (kv *ShardKV) hasShardsToMigrate() bool {
+	for i := 0; i < shardctrler.NShards; i++ {
+		if kv.pendingShards[i] && kv.config.Shards[i] != kv.gid {
+			return true
+		}
+	}
+	return false
+}
+
+func (kv *ShardKV) getShardsToMigrate() ([]MigrateArgs, [][]string) {
+	argss := make([]MigrateArgs, 0)
+	serverss := make([][]string, 0)
+	for i, pending := range kv.pendingShards {
+		gid := kv.config.Shards[i]
+		if pending && gid != kv.gid {
+			shard := kv.shards[i]
+			args := MigrateArgs{
+				Id:    i,
+				Num:   kv.config.Num,
+				Shard: *copyShard(&shard),
+			}
+			argss = append(argss, args)
+			servers := kv.config.Groups[gid]
+			serverss = append(serverss, servers)
+		}
+	}
+	return argss, serverss
 }
 
 type ShardKV struct {
@@ -113,17 +166,13 @@ type ShardKV struct {
 	maxraftstate int // snapshot if log grows this big
 	quitCh       chan struct{}
 	dead         int32
+	migrateCond  *sync.Cond
+	persister    *raft.Persister
+	notifyChs    map[int]chan Result
 	// Your definitions here.
 	config        shardctrler.Config
 	shards        map[int]Shard
-	servedShards  map[int]bool
-	pendingShards []int
-
-	persister *raft.Persister
-	notifyChs map[int]chan Result
-
-	database    map[string]string
-	lastSeqNums map[int64]int64
+	pendingShards [shardctrler.NShards]bool
 }
 
 func (kv *ShardKV) String() string {
@@ -138,65 +187,6 @@ func (kv *ShardKV) getNotifyCh(index int, createIfNotExist bool) chan Result {
 		kv.notifyChs[index] = make(chan Result, 1)
 	}
 	return kv.notifyChs[index]
-}
-
-func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
-	op := Op{
-		Key:    args.Key,
-		Type:   Get,
-		Id:     args.Id,
-		SeqNum: args.SeqNum,
-	}
-	reply.Err, reply.Value = kv.handleRequest(&op)
-}
-
-func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
-	op := Op{
-		Key:    args.Key,
-		Value:  args.Value,
-		Type:   args.Op,
-		Id:     args.Id,
-		SeqNum: args.SeqNum,
-	}
-	reply.Err, _ = kv.handleRequest(&op)
-}
-
-func (kv *ShardKV) handleRequest(op *Op) (err Err, value string) {
-	index, _, isLeader := kv.rf.Start(*op)
-	if !isLeader {
-		err = ErrWrongLeader
-		return
-	}
-	kv.mu.Lock()
-	notifyCh := kv.getNotifyCh(index, true)
-	DPrintf("%v process request: %v", kv.String(), *op)
-	kv.mu.Unlock()
-	select {
-	case result := <-notifyCh:
-		if _, isLeader := kv.rf.GetState(); isLeader {
-			fmt.Printf("op: %v, result: %v\n", op, result)
-		}
-		kv.mu.Lock()
-		if !op.isMatch(&result) {
-			err = ErrWrongLeader
-		} else {
-			err = result.Err
-			value = result.Value
-		}
-		delete(kv.notifyChs, index)
-		kv.mu.Unlock()
-		return
-	case <-time.After(OpTimeout):
-		err = ErrWrongLeader
-		kv.mu.Lock()
-		delete(kv.notifyChs, index)
-		kv.mu.Unlock()
-		return
-	case <-kv.quitCh:
-		return
-	}
 }
 
 func (kv *ShardKV) commandApplier() {
@@ -245,12 +235,23 @@ func (kv *ShardKV) applyOp(op *Op) (result *Result) {
 		kv.processPut(op, result)
 	case Append:
 		kv.processAppend(op, result)
+	case Config:
+		kv.processConfig(op, result)
+	case InShard:
+		kv.processInShard(op, result)
+	case OutShard:
+		kv.processOutShard(op, result)
 	}
 	return result
 }
 
 func (kv *ShardKV) processGet(op *Op, result *Result) {
-	if value, ok := kv.database[op.Key]; ok {
+	if !kv.canServe(op) {
+		result.Err = ErrWrongGroup
+		return
+	}
+	database := kv.shards[key2shard(op.Key)].Database
+	if value, ok := database[op.Key]; ok {
 		result.Value = value
 	} else {
 		result.Err = ErrNoKey
@@ -258,29 +259,87 @@ func (kv *ShardKV) processGet(op *Op, result *Result) {
 }
 
 func (kv *ShardKV) processPut(op *Op, result *Result) {
+	if !kv.canServe(op) {
+		result.Err = ErrWrongGroup
+		return
+	}
 	if kv.isDuplicate(op) {
 		return
 	}
-	kv.database[op.Key] = op.Value
+	database := kv.shards[key2shard(op.Key)].Database
+	database[op.Key] = op.Value
 }
 
 func (kv *ShardKV) processAppend(op *Op, result *Result) {
+	if !kv.canServe(op) {
+		result.Err = ErrWrongGroup
+		return
+	}
 	if kv.isDuplicate(op) {
 		return
 	}
-	kv.database[op.Key] += op.Value
+	database := kv.shards[key2shard(op.Key)].Database
+	database[op.Key] += op.Value
 }
 
 func (kv *ShardKV) processConfig(op *Op, result *Result) {
-
+	newConfig := op.Config
+	if newConfig.Num != kv.config.Num+1 {
+		return
+	}
+	for _, pending := range kv.pendingShards {
+		if pending {
+			return
+		}
+	}
+	for i := 0; i < shardctrler.NShards; i++ {
+		if kv.config.Shards[i] == 0 {
+			if newConfig.Shards[i] == kv.gid {
+				kv.shards[i] = *makeShard()
+			}
+			continue
+		}
+		if (kv.config.Shards[i] == kv.gid) == (newConfig.Shards[i] == kv.gid) {
+			continue
+		}
+		if newConfig.Shards[i] == 0 {
+			delete(kv.shards, i)
+			continue
+		}
+		kv.pendingShards[i] = true
+	}
+	kv.config = *newConfig
+	kv.migrateCond.Signal()
 }
 
 func (kv *ShardKV) processInShard(op *Op, result *Result) {
-
+	args := op.Args
+	if args.Num > kv.config.Num {
+		result.Err = ErrWrongGroup
+		return
+	}
+	if args.Num < kv.config.Num {
+		result.Err = OK
+		return
+	}
+	result.Err = OK
+	if !kv.pendingShards[args.Id] || kv.config.Shards[args.Id] != kv.gid {
+		return
+	}
+	kv.pendingShards[args.Id] = false
+	kv.shards[args.Id] = *copyShard(&args.Shard)
 }
 
 func (kv *ShardKV) processOutShard(op *Op, result *Result) {
-
+	args := op.Args
+	if args.Num != kv.config.Num {
+		return
+	}
+	if !kv.pendingShards[args.Id] {
+		return
+	}
+	kv.pendingShards[args.Id] = false
+	delete(kv.shards, args.Id)
 }
 
 func (kv *ShardKV) needSnapshot() bool {
@@ -294,8 +353,9 @@ func (kv *ShardKV) takeSnapshot(index int) {
 	DPrintf("%v start take snapshot", kv.String())
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	e.Encode(kv.database)
-	e.Encode(kv.lastSeqNums)
+	e.Encode(kv.config)
+	e.Encode(kv.shards)
+	e.Encode(kv.pendingShards)
 	kv.rf.Snapshot(index, w.Bytes())
 }
 
@@ -303,14 +363,17 @@ func (kv *ShardKV) applySnapshot(snapshot []byte) {
 	DPrintf("%v start apply snapshot", kv.String())
 	r := bytes.NewBuffer(snapshot)
 	d := labgob.NewDecoder(r)
-	var database map[string]string
-	var lastSeqNums map[int64]int64
-	if d.Decode(&database) != nil ||
-		d.Decode(&lastSeqNums) != nil {
+	var config shardctrler.Config
+	var shards map[int]Shard
+	var pendingShards [shardctrler.NShards]bool
+	if d.Decode(&config) != nil ||
+		d.Decode(&shards) != nil ||
+		d.Decode(&pendingShards) != nil {
 		DPrintf("%v fail to apply snapshot", kv.String())
 	} else {
-		kv.database = database
-		kv.lastSeqNums = lastSeqNums
+		kv.config = config
+		kv.shards = shards
+		kv.pendingShards = pendingShards
 	}
 }
 
@@ -320,20 +383,59 @@ func (kv *ShardKV) configUpdater() {
 		curNum := kv.config.Num
 		kv.mu.Unlock()
 		if config := kv.mck.Query(curNum + 1); config.Num == curNum+1 {
-
+			op := Op{
+				Type:   Config,
+				Config: &config,
+			}
+			kv.rf.Start(op)
 		}
 		time.Sleep(ConfigUpdateInterval)
 	}
 }
 
-func (kv *ShardKV) shardSender() {
+func (kv *ShardKV) shardMigrator() {
+	kv.mu.Lock()
 	for !kv.killed() {
-		kv.mu.Lock()
-		curNum := kv.config.Num
-		kv.mu.Unlock()
-		newConfig := kv.mck.Query(-1)
-		if newConfig.Num > curNum {
+		if kv.hasShardsToMigrate() {
+			argss, serverss := kv.getShardsToMigrate()
+			kv.mu.Unlock()
+			var wg sync.WaitGroup
+			for i, args := range argss {
+				wg.Add(1)
+				go func(args *MigrateArgs, servers []string) {
+					kv.sendShards(args, servers)
+					wg.Done()
+				}(&args, serverss[i])
+			}
+			wg.Wait()
+			kv.mu.Lock()
+		} else {
+			kv.migrateCond.Wait()
+		}
+	}
 
+}
+
+func (kv *ShardKV) sendShards(args *MigrateArgs, servers []string) {
+	for _, server := range servers {
+		end := kv.makeEnd(server)
+		var reply MigrateReply
+		ok := end.Call("ShardKV.Migrate", args, &reply)
+		if ok && reply.Ok {
+			kv.mu.Lock()
+			if args.Num != kv.config.Num {
+				return
+			}
+			if !kv.pendingShards[args.Id] {
+				return
+			}
+			kv.mu.Unlock()
+			op := Op{
+				Type: OutShard,
+				Args: args,
+			}
+			kv.rf.Start(op)
+			return
 		}
 	}
 }
@@ -388,6 +490,8 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
+	labgob.Register(config{})
+	labgob.Register(MigrateArgs{})
 
 	kv := new(ShardKV)
 	kv.me = me
@@ -401,20 +505,16 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	kv.quitCh = make(chan struct{})
-
-	kv.shards = make(map[int]Shard)
-	kv.config = kv.mck.Query(-1)
-
+	kv.migrateCond = sync.NewCond(&kv.mu)
 	kv.persister = persister
 	kv.notifyChs = make(map[int]chan Result)
+	kv.shards = make(map[int]Shard)
 
-	//kv.applySnapshot(persister.ReadSnapshot())
+	kv.applySnapshot(persister.ReadSnapshot())
 
-	kv.database = make(map[string]string)
-	kv.lastSeqNums = make(map[int64]int64)
 	go kv.commandApplier()
-	//go kv.configUpdater()
-	//go kv.shardSender()
+	go kv.configUpdater()
+	go kv.shardMigrator()
 
 	return kv
 }
