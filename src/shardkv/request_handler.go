@@ -60,13 +60,13 @@ func (kv *ShardKV) handleRequest(op *Op) (err Err, value string) {
 	kv.mu.Unlock()
 	select {
 	case result := <-notifyCh:
-		kv.mu.Lock()
 		if !isMatch(op, &result) {
 			err = ErrWrongLeader
 		} else {
 			err = result.Err
 			value = result.Value
 		}
+		kv.mu.Lock()
 		delete(kv.notifyChs, index)
 		kv.mu.Unlock()
 		return
