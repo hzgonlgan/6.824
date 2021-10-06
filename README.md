@@ -30,3 +30,5 @@
 ![Lab4A](img/Lab4A.png)
 
 ![Lab4B](img/Lab4B.png)
+
+![TestChallenge1Delete](img/TestChallenge1Delete.png)
