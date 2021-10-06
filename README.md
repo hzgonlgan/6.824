@@ -24,7 +24,8 @@
 
 - [x] Part 4A: The Shard controller
 - [x] Part 4B: Sharded Key/Value Serve
-  > The test speed is too slow, some hard tests have passed 500 times.
+
+> The test speed is too slow, some hard tests have passed 500 times.
 
 ![Lab4A](img/Lab4A.png)
 
