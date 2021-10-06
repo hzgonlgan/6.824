@@ -246,7 +246,7 @@ func (kv *ShardKV) applyOp(op *Op) (result *Result) {
 	case OutShard:
 		kv.processOutShard(op, result)
 	}
-	return result
+	return
 }
 
 func (kv *ShardKV) processGet(op *Op, result *Result) {
@@ -323,10 +323,8 @@ func (kv *ShardKV) processInShard(op *Op, result *Result) {
 		return
 	}
 	if args.Num < kv.config.Num {
-		result.Err = OK
 		return
 	}
-	result.Err = OK
 	if !kv.pendingShards[args.Id] || kv.config.Shards[args.Id] != kv.gid {
 		return
 	}
